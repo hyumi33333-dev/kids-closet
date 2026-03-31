@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import streamlit as st
 import json
 import os
@@ -317,7 +318,12 @@ st.set_page_config(page_title="\U0001F457 Kids Closet \U0001F476", layout="cente
 # ==============================
 st.markdown("""
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap');
+
 /* グローバルスタイル */
+html, body, [class*="css"] {
+    font-family: 'Noto Sans JP', sans-serif !important;
+}
 .block-container {
     padding-top: 1rem !important;
 }
