@@ -330,11 +330,9 @@ html, body, [class*="css"] {
 
 /* タイトルスタイル */
 h1 {
-    background: linear-gradient(90deg, #FF6B6B, #FF8E53, #FFC857);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
     font-weight: 800 !important;
     font-size: 2.2rem !important;
+    color: #FF6B6B !important;
 }
 
 /* サブヘッダーにカラフルアンダーライン */
