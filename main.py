@@ -2,6 +2,7 @@
 import streamlit as st
 import json
 import os
+import base64
 import pandas as pd
 from datetime import date, datetime
 from PIL import Image
@@ -309,13 +310,45 @@ def get_next_season(current):
     return order[(idx + 1) % 4]
 
 # ==============================
-# ページ設定 (centered for mobile)
+# アイコン読み込み (base64)
 # ==============================
-st.set_page_config(page_title="\U0001F457 Kids Closet \U0001F476", layout="centered")
+ICON_DIR = os.path.join(BASE_DIR, "static", "icons")
+
+def load_icon_b64(filename):
+    path = os.path.join(ICON_DIR, filename)
+    if os.path.exists(path):
+        with open(path, "rb") as f:
+            return base64.b64encode(f.read()).decode()
+    return ""
+
+ICON_LOGO     = load_icon_b64("logo.png")
+ICON_BABY     = load_icon_b64("baby.png")
+ICON_CLOTHING = load_icon_b64("clothing.png")
+ICON_CHART    = load_icon_b64("chart.png")
+ICON_CAMERA   = load_icon_b64("camera.png")
+ICON_BELL     = load_icon_b64("bell.png")
 
 # ==============================
-# カラフルポップCSS
+# ページ設定 (centered for mobile)
 # ==============================
+st.set_page_config(page_title="Kids Closet", page_icon="\U0001F457", layout="centered")
+
+# ==============================
+# カラフルポップCSS + カスタムアイコン
+# ==============================
+_icon_css = (
+    ".stTabs [data-baseweb='tab-list'] button:nth-child(1)"
+    "{background-image:url('data:image/png;base64," + ICON_BABY + "')!important}"
+    ".stTabs [data-baseweb='tab-list'] button:nth-child(2)"
+    "{background-image:url('data:image/png;base64," + ICON_CLOTHING + "')!important}"
+    ".stTabs [data-baseweb='tab-list'] button:nth-child(3)"
+    "{background-image:url('data:image/png;base64," + ICON_CHART + "')!important}"
+    ".stTabs [data-baseweb='tab-list'] button:nth-child(4)"
+    "{background-image:url('data:image/png;base64," + ICON_CAMERA + "')!important}"
+    ".stTabs [data-baseweb='tab-list'] button:nth-child(5)"
+    "{background-image:url('data:image/png;base64," + ICON_BELL + "')!important}"
+)
+
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap');
@@ -328,11 +361,9 @@ html, body, [class*="css"] {
     padding-top: 1rem !important;
 }
 
-/* タイトルスタイル */
+/* タイトル非表示（カスタムHTMLで表示するため） */
 h1 {
-    font-weight: 800 !important;
-    font-size: 2.2rem !important;
-    color: #FF6B6B !important;
+    display: none !important;
 }
 
 /* サブヘッダーにカラフルアンダーライン */
@@ -340,23 +371,41 @@ h2, h3 {
     color: #2D1B14 !important;
 }
 
-/* タブスタイル */
+/* ===== タブ → ボタン風スタイル ===== */
 .stTabs [data-baseweb="tab-list"] {
-    gap: 4px;
+    gap: 6px;
     background-color: #FFE8E0;
-    border-radius: 12px;
-    padding: 4px;
+    border-radius: 16px;
+    padding: 6px;
+    flex-wrap: wrap;
+    justify-content: center;
 }
 .stTabs [data-baseweb="tab-list"] button {
-    border-radius: 10px !important;
-    font-weight: 600;
-    padding: 0.5rem 0.6rem;
-    font-size: 0.9rem;
+    border-radius: 14px !important;
+    font-weight: 700;
+    padding: 0.5rem 0.8rem 0.5rem 2.5rem;
+    font-size: 0.8rem;
+    border: 2px solid transparent !important;
+    background-color: white !important;
+    color: #2D1B14 !important;
+    box-shadow: 0 2px 6px rgba(255, 142, 83, 0.15);
+    transition: all 0.25s ease;
+    position: relative;
+    background-repeat: no-repeat !important;
+    background-position: 6px center !important;
+    background-size: 18px 18px !important;
+}
+.stTabs [data-baseweb="tab-list"] button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(255, 107, 107, 0.25);
+    border-color: #FF6B6B !important;
 }
 .stTabs [data-baseweb="tab-list"] button[aria-selected="true"] {
     background-color: #FF6B6B !important;
     color: white !important;
-    border-radius: 10px !important;
+    border-radius: 14px !important;
+    border-color: #FF6B6B !important;
+    box-shadow: 0 4px 14px rgba(255, 107, 107, 0.4);
 }
 
 /* ボタンスタイル */
@@ -426,8 +475,8 @@ hr {
     }
     /* タブのタッチターゲットを大きく */
     .stTabs [data-baseweb="tab-list"] button {
-        font-size: 0.85rem;
-        padding: 0.6rem 0.3rem;
+        font-size: 0.78rem;
+        padding: 0.5rem 0.6rem 0.5rem 2.2rem;
     }
     /* ボタンを大きく・押しやすく */
     .stButton > button {
@@ -453,17 +502,25 @@ hr {
     }
 }
 </style>
+<style>""" + _icon_css + """</style>
 """, unsafe_allow_html=True)
 
-st.title("\U0001F457 Kids Closet \U0001F476")
-st.caption("\u2728 子どもの成長記録・服の管理・衣類費の予測 \u2728")
+st.title("Kids Closet")
+st.markdown(
+    f'<div style="display:flex;align-items:center;gap:12px;margin-bottom:4px;">'
+    f'<img src="data:image/png;base64,{ICON_LOGO}" width="52" height="52">'
+    f'<span style="font-size:2rem;font-weight:800;color:#FF6B6B;">Kids Closet</span>'
+    f'</div>'
+    f'<p style="color:#999;font-size:0.9rem;margin-top:0;">子どもの成長記録・服の管理・衣類費の予測</p>',
+    unsafe_allow_html=True
+)
 
 tabs = st.tabs([
-    "\U0001F476 子ども設定",
-    "\U0001F455 服の管理",
-    "\U0001F4CA CSV分析・予測",
-    "\U0001F4F8 写真一覧",
-    "\U0001F514 通知設定",
+    "子ども設定",
+    "服の管理",
+    "CSV分析・予測",
+    "写真一覧",
+    "通知設定",
 ])
 
 # ==============================
