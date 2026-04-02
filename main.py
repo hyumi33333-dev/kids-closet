@@ -8,6 +8,7 @@ from datetime import date, datetime
 from PIL import Image
 import glob
 import requests
+import anthropic
 
 # ==============================
 # 設定
@@ -18,8 +19,9 @@ CSV_DIR   = os.path.join(DATA_DIR, "csv")
 PHOTO_DIR = os.path.join(BASE_DIR, "photos")
 KIDS_FILE       = os.path.join(DATA_DIR, "kids.json")
 CLOTHES_FILE    = os.path.join(DATA_DIR, "clothes.json")
-LINE_TOKEN_FILE = os.path.join(DATA_DIR, "line_token.json")
-NOTIFY_LOG_FILE = os.path.join(DATA_DIR, "notify_log.json")
+LINE_TOKEN_FILE    = os.path.join(DATA_DIR, "line_token.json")
+NOTIFY_LOG_FILE    = os.path.join(DATA_DIR, "notify_log.json")
+CLAUDE_KEY_FILE    = os.path.join(DATA_DIR, "claude_api_key.json")
 
 for d in [DATA_DIR, CSV_DIR, PHOTO_DIR]:
     os.makedirs(d, exist_ok=True)
@@ -67,6 +69,17 @@ def load_notify_log():
 def save_notify_log(log):
     with open(NOTIFY_LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(log, f, ensure_ascii=False, indent=2)
+
+def load_claude_api_key():
+    if os.path.exists(CLAUDE_KEY_FILE):
+        with open(CLAUDE_KEY_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+            return data.get("api_key", "")
+    return ""
+
+def save_claude_api_key(key):
+    with open(CLAUDE_KEY_FILE, "w", encoding="utf-8") as f:
+        json.dump({"api_key": key}, f, ensure_ascii=False, indent=2)
 
 # ==============================
 # サイズアウト予測
@@ -290,88 +303,112 @@ def calc_price_per_item(shop_amounts):
 # ==============================
 # 写真から服カテゴリ推定
 # ==============================
-def analyze_clothing_image(image):
-    """写真から服の種類を推定（色・形状・明るさの複合分析）"""
+def analyze_clothing_image_ai(image, api_key):
+    """Claude Vision APIで写真から服の種類を高精度分析"""
+    import io
+    buf = io.BytesIO()
+    img_resized = image.copy()
+    img_resized.thumbnail((512, 512))
+    img_resized.save(buf, format="JPEG", quality=80)
+    img_b64 = base64.b64encode(buf.getvalue()).decode()
+
+    categories_str = "、".join(ALL_CLOTHING_TYPES)
+    prompt = (
+        "この写真に写っている子ども服を分析してください。\n"
+        "以下のカテゴリから最も適切なものを1つ選んでください:\n"
+        f"{categories_str}\n\n"
+        "回答は必ず以下のJSON形式のみで返してください（説明不要）:\n"
+        '{"category": "カテゴリ名", "confidence": "高/中/低", '
+        '"color": "色の説明", "detail": "素材や特徴の短い説明", '
+        '"alternatives": ["候補2", "候補3"]}'
+    )
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        message = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=300,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": img_b64}},
+                    {"type": "text", "text": prompt},
+                ],
+            }],
+        )
+        response_text = message.content[0].text.strip()
+        # JSON部分を抽出
+        if "{" in response_text:
+            json_str = response_text[response_text.index("{"):response_text.rindex("}") + 1]
+            result = json.loads(json_str)
+            cat = result.get("category", "薄手トップス")
+            # カテゴリがリストにあるか確認
+            if cat not in ALL_CLOTHING_TYPES:
+                # 部分一致で探す
+                for t in ALL_CLOTHING_TYPES:
+                    if t in cat or cat in t:
+                        cat = t
+                        break
+                else:
+                    cat = "薄手トップス"
+            alts = []
+            for a in result.get("alternatives", []):
+                if a in ALL_CLOTHING_TYPES:
+                    alts.append((a, "中"))
+            return {
+                "suggested_category": cat,
+                "confidence": result.get("confidence", "中"),
+                "alternatives": alts,
+                "color_info": result.get("color", ""),
+                "detail": result.get("detail", ""),
+                "ai_used": True,
+            }
+    except Exception as e:
+        return {"error": str(e)}
+    return {"error": "解析に失敗しました"}
+
+def analyze_clothing_image_simple(image):
+    """フォールバック: 画像の色・形状から簡易推定"""
     import numpy as np
     width, height = image.size
     aspect_ratio = width / height
-
-    # 画像をリサイズして分析（高速化）
     thumb = image.resize((100, 100)).convert("RGB")
     pixels = np.array(thumb)
-
-    # 平均色を取得
     avg_r, avg_g, avg_b = pixels.mean(axis=(0, 1))
     brightness = (avg_r + avg_g + avg_b) / 3
-
-    # 色の支配率を計算
     is_dark = brightness < 100
-    is_light = brightness > 180
-    is_warm = avg_r > avg_b + 20  # 暖色系
-    is_cool = avg_b > avg_r + 20  # 寒色系
 
-    # 画像の上半分と下半分の色差（上下で分かれているか）
-    top_half = pixels[:50].mean(axis=(0, 1))
-    bottom_half = pixels[50:].mean(axis=(0, 1))
-    vertical_diff = abs(top_half - bottom_half).mean()
-
-    # 中央部分の色のばらつき（柄の複雑さ）
-    center = pixels[25:75, 25:75]
-    color_variance = center.std()
-
-    # 分類ロジック
     candidates = []
-
     if aspect_ratio < 0.6:
-        # 縦長 → ズボン系
-        if is_dark:
-            candidates.append(("長ズボン", "高"))
-        else:
-            candidates.append(("半ズボン", "中"))
-            candidates.append(("長ズボン", "中"))
+        candidates.append(("長ズボン" if is_dark else "半ズボン", "低"))
     elif aspect_ratio > 1.5:
-        # 横長 → 広げたトップス
-        if is_light and is_warm:
-            candidates.append(("半袖Tシャツ", "中"))
-        else:
-            candidates.append(("薄手トップス", "中"))
+        candidates.append(("半袖Tシャツ", "低"))
     elif 0.6 <= aspect_ratio <= 0.85:
-        # やや縦長 → ワンピース、スカート
-        if vertical_diff > 30:
-            candidates.append(("ワンピース", "中"))
-        else:
-            candidates.append(("スカート", "中"))
-            candidates.append(("長ズボン", "中"))
+        candidates.append(("スカート", "低"))
     else:
-        # 正方形に近い → トップス系
-        if is_dark and color_variance < 30:
-            # 暗くて単色 → 厚手系
-            candidates.append(("厚手トップス", "中"))
-            candidates.append(("アウター", "中"))
-        elif is_light and color_variance < 25:
-            # 明るくて単色 → 肌着/下着
-            if brightness > 210:
-                candidates.append(("下着（肌着）", "中"))
-            else:
-                candidates.append(("半袖Tシャツ", "中"))
-        elif is_warm:
-            candidates.append(("半袖Tシャツ", "中"))
-            candidates.append(("薄手トップス", "低"))
-        elif is_cool:
-            candidates.append(("厚手トップス", "中"))
-            candidates.append(("パーカー", "低"))
+        if is_dark:
+            candidates.append(("厚手トップス", "低"))
+        elif brightness > 210:
+            candidates.append(("下着（肌着）", "低"))
         else:
             candidates.append(("薄手トップス", "低"))
-            candidates.append(("半袖Tシャツ", "低"))
-
     if not candidates:
         candidates.append(("薄手トップス", "低"))
-
     return {
         "suggested_category": candidates[0][0],
         "confidence": candidates[0][1],
-        "alternatives": candidates[1:] if len(candidates) > 1 else [],
+        "alternatives": [],
+        "ai_used": False,
     }
+
+def analyze_clothing_image(image):
+    """写真から服の種類を推定（APIキーがあればClaude Vision、なければ簡易分析）"""
+    api_key = load_claude_api_key()
+    if api_key:
+        result = analyze_clothing_image_ai(image, api_key)
+        if "error" not in result:
+            return result
+    return analyze_clothing_image_simple(image)
 
 # ==============================
 # LINE Notify
@@ -751,12 +788,21 @@ with tabs[1]:
             suggested_season = "通年"
             if photo_image is not None:
                 st.image(photo_image, caption="撮影した写真", use_container_width=True)
-                analysis = analyze_clothing_image(photo_image)
+                with st.spinner("写真を解析中..."):
+                    analysis = analyze_clothing_image(photo_image)
                 suggested_cat = analysis["suggested_category"]
                 suggested_season = guess_season_from_category(suggested_cat)
                 confidence_map = {"高": "高い", "中": "まあまあ", "低": "低い（要確認）"}
                 conf_label = confidence_map.get(analysis["confidence"], analysis["confidence"])
-                info_text = "AI推定: **" + suggested_cat + "**（" + suggested_season + "） 確度: " + conf_label
+                if analysis.get("ai_used"):
+                    info_text = "Claude AI判定: **" + suggested_cat + "**（" + suggested_season + "） 確度: " + conf_label
+                    if analysis.get("color_info"):
+                        info_text += "\n\n色: " + analysis["color_info"]
+                    if analysis.get("detail"):
+                        info_text += "　｜　" + analysis["detail"]
+                else:
+                    info_text = "簡易推定: **" + suggested_cat + "**（" + suggested_season + "） 確度: " + conf_label
+                    info_text += "\n\n（APIキーを設定するとAIが高精度で判定します）"
                 if analysis.get("alternatives"):
                     alt_names = [a[0] for a in analysis["alternatives"]]
                     info_text += "\n\n他の候補: " + "、".join(alt_names)
@@ -1095,6 +1141,56 @@ with tabs[3]:
 # TAB 5: LINE通知設定
 # ==============================
 with tabs[4]:
+    # === Claude API キー設定 ===
+    st.markdown(icon_heading(ICON_CAMERA, "AI写真解析の設定"), unsafe_allow_html=True)
+    st.markdown("Claude Vision APIを設定すると、写真から服の種類を**高精度で自動判定**できます。\n\n"
+                "（設定しなくても簡易判定は利用できます）")
+
+    with st.expander("Claude APIキーの取得方法"):
+        st.markdown(
+            "**ステップ1**: [console.anthropic.com](https://console.anthropic.com) にアクセス\n\n"
+            "**ステップ2**: アカウントを作成（Googleログインなど）\n\n"
+            "**ステップ3**: 左メニューの「API Keys」を開く\n\n"
+            "**ステップ4**: 「Create Key」をクリック\n\n"
+            "**ステップ5**: キーをコピーして下にペースト！\n\n"
+            "費用: 写真1枚あたり約0.5〜1円程度です")
+
+    saved_claude_key = load_claude_api_key()
+    claude_api_key = st.text_input("Claude APIキー", value=saved_claude_key, type="password",
+                                    placeholder="sk-ant-api03-... をペースト", key="claude_key_input")
+
+    col_ck_save, col_ck_test = st.columns(2)
+    with col_ck_save:
+        if st.button("APIキーを保存", key="save_claude_key"):
+            if claude_api_key:
+                save_claude_api_key(claude_api_key)
+                st.success("APIキーを保存しました！写真登録時にAI判定が有効になります")
+            else:
+                st.warning("APIキーを入力してください")
+    with col_ck_test:
+        if st.button("接続テスト", key="test_claude_key"):
+            if claude_api_key:
+                try:
+                    client = anthropic.Anthropic(api_key=claude_api_key)
+                    msg = client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=50,
+                        messages=[{"role": "user", "content": "OK?"}],
+                    )
+                    st.success("接続成功！AI写真解析が利用できます")
+                except Exception as e:
+                    st.error("接続失敗: " + str(e))
+            else:
+                st.warning("先にAPIキーを入力してください")
+
+    if saved_claude_key:
+        st.success("AI写真解析: 有効")
+    else:
+        st.caption("AI写真解析: 未設定（簡易判定モードで動作中）")
+
+    st.divider()
+
+    # === LINE通知設定 ===
     st.markdown(icon_heading(ICON_BELL, "LINE通知設定"), unsafe_allow_html=True)
     st.markdown("サイズアウトが近づいたら、LINEでお知らせを受け取れます！\n\n"
                 "**LINE Notify** を使って、Kids Closetから直接LINEに通知を送ります。")
