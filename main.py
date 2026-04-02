@@ -156,6 +156,31 @@ ALL_CLOTHING_TYPES = sorted(set(
     item for items in SEASON_CATEGORIES.values() for item in items
 ))
 
+# カテゴリ → 大分類（上服/下服/下着/パジャマ/アウター/小物）のマッピング
+CATEGORY_TO_GROUP = {
+    "薄手トップス": "上服", "半袖Tシャツ": "上服", "タンクトップ": "上服",
+    "キャミソール": "上服", "厚手トップス": "上服", "ヒートテック": "上服",
+    "カーディガン": "上服", "パーカー": "上服", "ワンピース": "上服",
+    "長ズボン": "下服", "半ズボン": "下服", "スカート": "下服",
+    "下着（肌着）": "下着", "下着（パンツ）": "下着",
+    "パジャマ": "パジャマ",
+    "アウター": "アウター", "防寒具": "アウター",
+    "靴下": "小物",
+}
+
+def count_clothes_by_kid(clothes, kid_name, season_filter=None):
+    """登録済みの服データから、子ども別・大分類別の枚数を自動集計"""
+    counts = {"上服": 0, "下服": 0, "下着": 0, "パジャマ": 0, "アウター": 0, "小物": 0}
+    for c in clothes:
+        if c["kid"] != kid_name:
+            continue
+        if season_filter and season_filter != "すべて":
+            if c.get("season", "通年") != season_filter and c.get("season", "通年") != "通年":
+                continue
+        group = CATEGORY_TO_GROUP.get(c["category"], "上服")
+        counts[group] = counts.get(group, 0) + 1
+    return counts
+
 SEASONAL_NEEDS = {
     "spring": {
         "label": "春（3〜5月）", "months": [3, 4, 5],
@@ -266,16 +291,87 @@ def calc_price_per_item(shop_amounts):
 # 写真から服カテゴリ推定
 # ==============================
 def analyze_clothing_image(image):
-    # TODO: Connect to Claude Vision API for auto-detection
+    """写真から服の種類を推定（色・形状・明るさの複合分析）"""
+    import numpy as np
     width, height = image.size
     aspect_ratio = width / height
-    if aspect_ratio > 1.3:
-        suggested = "半袖Tシャツ"; confidence = "中"
-    elif aspect_ratio < 0.7:
-        suggested = "長ズボン"; confidence = "中"
+
+    # 画像をリサイズして分析（高速化）
+    thumb = image.resize((100, 100)).convert("RGB")
+    pixels = np.array(thumb)
+
+    # 平均色を取得
+    avg_r, avg_g, avg_b = pixels.mean(axis=(0, 1))
+    brightness = (avg_r + avg_g + avg_b) / 3
+
+    # 色の支配率を計算
+    is_dark = brightness < 100
+    is_light = brightness > 180
+    is_warm = avg_r > avg_b + 20  # 暖色系
+    is_cool = avg_b > avg_r + 20  # 寒色系
+
+    # 画像の上半分と下半分の色差（上下で分かれているか）
+    top_half = pixels[:50].mean(axis=(0, 1))
+    bottom_half = pixels[50:].mean(axis=(0, 1))
+    vertical_diff = abs(top_half - bottom_half).mean()
+
+    # 中央部分の色のばらつき（柄の複雑さ）
+    center = pixels[25:75, 25:75]
+    color_variance = center.std()
+
+    # 分類ロジック
+    candidates = []
+
+    if aspect_ratio < 0.6:
+        # 縦長 → ズボン系
+        if is_dark:
+            candidates.append(("長ズボン", "高"))
+        else:
+            candidates.append(("半ズボン", "中"))
+            candidates.append(("長ズボン", "中"))
+    elif aspect_ratio > 1.5:
+        # 横長 → 広げたトップス
+        if is_light and is_warm:
+            candidates.append(("半袖Tシャツ", "中"))
+        else:
+            candidates.append(("薄手トップス", "中"))
+    elif 0.6 <= aspect_ratio <= 0.85:
+        # やや縦長 → ワンピース、スカート
+        if vertical_diff > 30:
+            candidates.append(("ワンピース", "中"))
+        else:
+            candidates.append(("スカート", "中"))
+            candidates.append(("長ズボン", "中"))
     else:
-        suggested = "薄手トップス"; confidence = "低"
-    return {"suggested_category": suggested, "confidence": confidence}
+        # 正方形に近い → トップス系
+        if is_dark and color_variance < 30:
+            # 暗くて単色 → 厚手系
+            candidates.append(("厚手トップス", "中"))
+            candidates.append(("アウター", "中"))
+        elif is_light and color_variance < 25:
+            # 明るくて単色 → 肌着/下着
+            if brightness > 210:
+                candidates.append(("下着（肌着）", "中"))
+            else:
+                candidates.append(("半袖Tシャツ", "中"))
+        elif is_warm:
+            candidates.append(("半袖Tシャツ", "中"))
+            candidates.append(("薄手トップス", "低"))
+        elif is_cool:
+            candidates.append(("厚手トップス", "中"))
+            candidates.append(("パーカー", "低"))
+        else:
+            candidates.append(("薄手トップス", "低"))
+            candidates.append(("半袖Tシャツ", "低"))
+
+    if not candidates:
+        candidates.append(("薄手トップス", "低"))
+
+    return {
+        "suggested_category": candidates[0][0],
+        "confidence": candidates[0][1],
+        "alternatives": candidates[1:] if len(candidates) > 1 else [],
+    }
 
 # ==============================
 # LINE Notify
@@ -290,12 +386,18 @@ def send_line_notify(token, message):
         return False, str(e)
 
 def estimate_sizeout_cost(kid):
-    """サイズアウト時にかかる買い替え費用を推定"""
+    """サイズアウト時にかかる買い替え費用を推定（登録済みの服から自動集計）"""
     recommend = {"上服": 7, "下服": 6, "下着": 10, "パジャマ": 2}
-    needs = {"上服": max(0, recommend["上服"] - kid.get("tops", 0)),
-             "下服": max(0, recommend["下服"] - kid.get("bottoms", 0)),
-             "下着": max(0, recommend["下着"] - kid.get("underwear", 0)),
-             "パジャマ": max(0, recommend["パジャマ"] - kid.get("pajamas", 0))}
+    all_c = load_clothes()
+    current_m = datetime.now().month
+    cs_key = get_current_season(current_m)
+    sn_map = {"spring": "春秋", "summer": "夏", "autumn": "春秋", "winter": "冬"}
+    cs_name = sn_map.get(cs_key, "通年")
+    counts = count_clothes_by_kid(all_c, kid["name"], cs_name)
+    needs = {"上服": max(0, recommend["上服"] - counts["上服"]),
+             "下服": max(0, recommend["下服"] - counts["下服"]),
+             "下着": max(0, recommend["下着"] - counts["下着"]),
+             "パジャマ": max(0, recommend["パジャマ"] - counts["パジャマ"])}
     # CSVデータから平均単価を計算、なければデフォルト
     try:
         _, shop_amounts, _ = parse_csv_files()
@@ -533,25 +635,11 @@ with tabs[0]:
         new_shoe_size = st.selectbox("靴サイズ", ["12","13","14","15","16","17","18","19","20","21","22","23","24","25"],
                                       index=4, label_visibility="collapsed", key="new_shoe")
 
-        st.markdown(f'<div class="icon-label">{icon_img(ICON_CLOTHING)}上服の枚数</div>', unsafe_allow_html=True)
-        new_tops = st.number_input("上服", 0, 50, 5, label_visibility="collapsed", key="new_tops")
-
-        st.markdown(f'<div class="icon-label">{icon_img(ICON_PANTS)}下服の枚数</div>', unsafe_allow_html=True)
-        new_bottoms = st.number_input("下服", 0, 50, 5, label_visibility="collapsed", key="new_bottoms")
-
-        st.markdown(f'<div class="icon-label">{icon_img(ICON_UNDERWEAR)}下着の枚数</div>', unsafe_allow_html=True)
-        new_underwear = st.number_input("下着", 0, 50, 7, label_visibility="collapsed", key="new_underwear")
-
-        st.markdown(f'<div class="icon-label">{icon_img(ICON_PAJAMAS)}パジャマの枚数</div>', unsafe_allow_html=True)
-        new_pajamas = st.number_input("パジャマ", 0, 20, 2, label_visibility="collapsed", key="new_pajamas")
-
         if st.button("追加する"):
             if new_name:
                 kids.append({"name": new_name, "gender": new_gender,
                              "birthday": new_bday.strftime("%Y-%m-%d"), "height": new_height,
-                             "size": new_size, "shoe_size": new_shoe_size,
-                             "tops": new_tops, "bottoms": new_bottoms,
-                             "underwear": new_underwear, "pajamas": new_pajamas})
+                             "size": new_size, "shoe_size": new_shoe_size})
                 save_kids(kids)
                 st.success(new_name + " を追加しました！")
                 st.rerun()
@@ -599,14 +687,32 @@ with tabs[0]:
                 st.success(shoe_pred["status"])
             st.caption("次の靴サイズ(" + str(shoe_pred["next_size"]) + "cm)まで あと約 " + str(shoe_pred["months"]) + "ヶ月")
 
-            st.markdown(f'<p style="font-weight:600;">{icon_img(ICON_CLOTHING, 16)}今の服の枚数</p>', unsafe_allow_html=True)
-            col_a, col_b = st.columns(2)
+            # 登録済みの服から自動集計
+            all_clothes = load_clothes()
+            current_month = datetime.now().month
+            cur_season_key = get_current_season(current_month)
+            season_name_map = {"spring": "春秋", "summer": "夏", "autumn": "春秋", "winter": "冬"}
+            cur_season_name = season_name_map.get(cur_season_key, "通年")
+
+            counts_all = count_clothes_by_kid(all_clothes, kid["name"])
+            counts_season = count_clothes_by_kid(all_clothes, kid["name"], cur_season_name)
+            total_registered = sum(counts_all.values())
+
+            st.markdown(f'<p style="font-weight:600;">{icon_img(ICON_CLOTHING, 16)}登録済みの服（全{total_registered}枚）</p>', unsafe_allow_html=True)
+            # 今のシーズン
+            st.markdown(f'<p style="font-size:0.85rem;color:#666;">今のシーズン（{cur_season_name}+通年）の枚数:</p>', unsafe_allow_html=True)
+            col_a, col_b, col_c = st.columns(3)
             with col_a:
-                st.markdown(f'<span style="font-size:0.85rem;">{icon_img(ICON_CLOTHING, 14)}上服: {kid.get("tops", 0)}枚</span>', unsafe_allow_html=True)
-                st.markdown(f'<span style="font-size:0.85rem;">{icon_img(ICON_PANTS, 14)}下服: {kid.get("bottoms", 0)}枚</span>', unsafe_allow_html=True)
+                st.markdown(f'<span style="font-size:0.85rem;">{icon_img(ICON_CLOTHING, 14)}上服: {counts_season["上服"]}枚</span>', unsafe_allow_html=True)
+                st.markdown(f'<span style="font-size:0.85rem;">{icon_img(ICON_PANTS, 14)}下服: {counts_season["下服"]}枚</span>', unsafe_allow_html=True)
             with col_b:
-                st.markdown(f'<span style="font-size:0.85rem;">{icon_img(ICON_UNDERWEAR, 14)}下着: {kid.get("underwear", 0)}枚</span>', unsafe_allow_html=True)
-                st.markdown(f'<span style="font-size:0.85rem;">{icon_img(ICON_PAJAMAS, 14)}パジャマ: {kid.get("pajamas", 0)}枚</span>', unsafe_allow_html=True)
+                st.markdown(f'<span style="font-size:0.85rem;">{icon_img(ICON_UNDERWEAR, 14)}下着: {counts_season["下着"]}枚</span>', unsafe_allow_html=True)
+                st.markdown(f'<span style="font-size:0.85rem;">{icon_img(ICON_PAJAMAS, 14)}パジャマ: {counts_season["パジャマ"]}枚</span>', unsafe_allow_html=True)
+            with col_c:
+                st.markdown(f'<span style="font-size:0.85rem;">{icon_img(ICON_CLOTHING, 14)}アウター: {counts_season["アウター"]}枚</span>', unsafe_allow_html=True)
+                st.markdown(f'<span style="font-size:0.85rem;">{icon_img(ICON_SHOE, 14)}小物: {counts_season["小物"]}枚</span>', unsafe_allow_html=True)
+            if total_registered == 0:
+                st.caption("「服の管理」タブで服を登録すると自動的にカウントされます")
 
             if st.button("削除", key="del_" + str(i)):
                 kids.pop(i)
@@ -648,8 +754,14 @@ with tabs[1]:
                 analysis = analyze_clothing_image(photo_image)
                 suggested_cat = analysis["suggested_category"]
                 suggested_season = guess_season_from_category(suggested_cat)
-                st.info("AI推定: **" + suggested_cat + "**（" + suggested_season + "）信頼度: " + analysis["confidence"] +
-                        "\n\n下で確認・変更できます！")
+                confidence_map = {"高": "高い", "中": "まあまあ", "低": "低い（要確認）"}
+                conf_label = confidence_map.get(analysis["confidence"], analysis["confidence"])
+                info_text = "AI推定: **" + suggested_cat + "**（" + suggested_season + "） 確度: " + conf_label
+                if analysis.get("alternatives"):
+                    alt_names = [a[0] for a in analysis["alternatives"]]
+                    info_text += "\n\n他の候補: " + "、".join(alt_names)
+                info_text += "\n\n違う場合は下のセレクトボックスで変更してください"
+                st.info(info_text)
 
             st.markdown(f'<p style="font-weight:600;">{icon_img(ICON_NAMETAG, 18)}ステップ2: 情報を入力</p>', unsafe_allow_html=True)
 
@@ -871,18 +983,25 @@ with tabs[2]:
                 recommend = {"上服": 7, "下服": 6, "下着": 10, "パジャマ": 2}
                 base_price = (round(sum(price_per_item.values()) / len(price_per_item)) if price_per_item else 1500)
                 total_all = 0
+                all_clothes_csv = load_clothes()
+                cur_m = datetime.now().month
+                cur_s_key = get_current_season(cur_m)
+                s_name_map = {"spring": "春秋", "summer": "夏", "autumn": "春秋", "winter": "冬"}
+                cur_s_name = s_name_map.get(cur_s_key, "通年")
                 for kid in kids:
                     st.markdown(f'<p style="font-weight:600;">{icon_img(ICON_BABY, 16)}{kid["name"]}</p>', unsafe_allow_html=True)
-                    needs = {"上服": max(0, recommend["上服"] - kid.get("tops", 0)),
-                             "下服": max(0, recommend["下服"] - kid.get("bottoms", 0)),
-                             "下着": max(0, recommend["下着"] - kid.get("underwear", 0)),
-                             "パジャマ": max(0, recommend["パジャマ"] - kid.get("pajamas", 0))}
+                    counts = count_clothes_by_kid(all_clothes_csv, kid["name"], cur_s_name)
+                    needs = {"上服": max(0, recommend["上服"] - counts["上服"]),
+                             "下服": max(0, recommend["下服"] - counts["下服"]),
+                             "下着": max(0, recommend["下着"] - counts["下着"]),
+                             "パジャマ": max(0, recommend["パジャマ"] - counts["パジャマ"])}
                     total_kid = sum(n * base_price for n in needs.values())
                     total_all += total_kid
                     cols = st.columns(2)
                     for ci, (label, n) in enumerate(needs.items()):
                         with cols[ci % 2]:
-                            st.metric(label, "あと" + str(n) + "枚",
+                            st.metric(label + "（現在" + str(counts[label]) + "枚）",
+                                      "あと" + str(n) + "枚",
                                       delta="OK" if n == 0 else "¥" + str(n * base_price),
                                       delta_color="normal" if n == 0 else "inverse")
                     st.caption("この子の今季必要額: ¥" + str(total_kid))
