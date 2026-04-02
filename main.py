@@ -72,8 +72,10 @@ def save_notify_log(log):
 # サイズアウト予測
 # ==============================
 SIZE_CHART = [80, 90, 95, 100, 110, 120, 130, 140, 150, 160, 170]
+SHOE_SIZE_CHART = [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
 
-def predict_sizeout(height_cm, birthday_str, current_size):
+def _calc_age_and_growth(birthday_str):
+    """誕生日から年齢と年間成長量(cm)を返す"""
     try:
         birthday  = datetime.strptime(birthday_str, "%Y-%m-%d").date()
         age_days  = (date.today() - birthday).days
@@ -88,6 +90,10 @@ def predict_sizeout(height_cm, birthday_str, current_size):
         growth = 5.5
     else:
         growth = 5
+    return age_years, growth
+
+def predict_sizeout(height_cm, birthday_str, current_size):
+    age_years, growth = _calc_age_and_growth(birthday_str)
     try:
         size_num = int(str(current_size).replace("cm", "").strip())
     except Exception:
@@ -106,6 +112,35 @@ def predict_sizeout(height_cm, birthday_str, current_size):
         color  = "green"
     return {"status": status, "color": color, "months": months_to_next,
             "next_size": next_boundary, "cm_to_next": cm_to_next}
+
+def predict_shoe_sizeout(birthday_str, current_shoe_size):
+    """靴のサイズアウト予測"""
+    age_years, _ = _calc_age_and_growth(birthday_str)
+    # 足の成長速度 (cm/年): 幼児1.5cm, 学童1cm, それ以降0.5cm
+    if age_years <= 3:
+        foot_growth = 1.5
+    elif age_years <= 6:
+        foot_growth = 1.0
+    else:
+        foot_growth = 0.5
+    try:
+        shoe_num = float(str(current_shoe_size).replace("cm", "").strip())
+    except Exception:
+        shoe_num = 18
+    next_shoe = next((s for s in SHOE_SIZE_CHART if s > shoe_num), 25)
+    cm_to_next = next_shoe - shoe_num
+    months_to_next = round((cm_to_next / foot_growth) * 12)
+    if months_to_next <= 2:
+        status = "まもなく靴サイズアウト"
+        color  = "red"
+    elif months_to_next <= 5:
+        status = "半年以内に靴サイズアウト"
+        color  = "orange"
+    else:
+        status = "当面大丈夫"
+        color  = "green"
+    return {"status": status, "color": color, "months": months_to_next,
+            "next_size": next_shoe, "cm_to_next": cm_to_next}
 
 # ==============================
 # 季節別カテゴリ定義
@@ -254,18 +289,59 @@ def send_line_notify(token, message):
     except Exception as e:
         return False, str(e)
 
+def estimate_sizeout_cost(kid):
+    """サイズアウト時にかかる買い替え費用を推定"""
+    recommend = {"上服": 7, "下服": 6, "下着": 10, "パジャマ": 2}
+    needs = {"上服": max(0, recommend["上服"] - kid.get("tops", 0)),
+             "下服": max(0, recommend["下服"] - kid.get("bottoms", 0)),
+             "下着": max(0, recommend["下着"] - kid.get("underwear", 0)),
+             "パジャマ": max(0, recommend["パジャマ"] - kid.get("pajamas", 0))}
+    # CSVデータから平均単価を計算、なければデフォルト
+    try:
+        _, shop_amounts, _ = parse_csv_files()
+        price_per_item = calc_price_per_item(shop_amounts)
+        base_price = round(sum(price_per_item.values()) / len(price_per_item)) if price_per_item else 1500
+    except Exception:
+        base_price = 1500
+    clothes_cost = sum(n * base_price for n in needs.values())
+    # 靴の買い替え費用（子ども靴の平均）
+    shoe_cost = 2500
+    total = clothes_cost + shoe_cost
+    return {"clothes_cost": clothes_cost, "shoe_cost": shoe_cost, "total": total,
+            "base_price": base_price, "needs": needs}
+
 def check_and_notify_sizeout(kids, token):
     results = []
     for kid in kids:
         pred = predict_sizeout(kid.get("height", 120), kid.get("birthday", "2016-01-01"), kid.get("size", "120"))
-        if pred["color"] in ["red", "orange"]:
-            msg = ("\n" + kid["name"] + "の服がまもなくサイズアウトします！\n"
-                   "現在サイズ: " + str(kid.get("size", "?")) + "cm\n"
-                   "次のサイズ: " + str(pred["next_size"]) + "cm\n"
-                   "あと約" + str(pred["months"]) + "ヶ月\n\nKids Closetで確認してね！")
+        shoe_pred = predict_shoe_sizeout(kid.get("birthday", "2016-01-01"), kid.get("shoe_size", "18"))
+        # 服または靴がサイズアウト近い場合に通知
+        if pred["color"] in ["red", "orange"] or shoe_pred["color"] in ["red", "orange"]:
+            cost = estimate_sizeout_cost(kid)
+            msg = "\n" + kid["name"] + "のサイズアウト情報\n"
+            if pred["color"] in ["red", "orange"]:
+                msg += ("\n【服】" + pred["status"] + "\n"
+                        "現在: " + str(kid.get("size", "?")) + "cm → 次: " + str(pred["next_size"]) + "cm\n"
+                        "あと約" + str(pred["months"]) + "ヶ月\n")
+            if shoe_pred["color"] in ["red", "orange"]:
+                msg += ("\n【靴】" + shoe_pred["status"] + "\n"
+                        "現在: " + str(kid.get("shoe_size", "?")) + "cm → 次: " + str(shoe_pred["next_size"]) + "cm\n"
+                        "あと約" + str(shoe_pred["months"]) + "ヶ月\n")
+            msg += ("\n【買い替え費用の目安】\n"
+                    "服: 約¥" + str(cost["clothes_cost"]) + "\n"
+                    "靴: 約¥" + str(cost["shoe_cost"]) + "\n"
+                    "合計: 約¥" + str(cost["total"]) + "\n"
+                    "(1枚あたり¥" + str(cost["base_price"]) + "で計算)\n"
+                    "\nKids Closetで確認してね！")
             success, status = send_line_notify(token, msg)
-            results.append({"kid": kid["name"], "status": pred["status"],
+            notify_status = []
+            if pred["color"] in ["red", "orange"]:
+                notify_status.append(pred["status"])
+            if shoe_pred["color"] in ["red", "orange"]:
+                notify_status.append(shoe_pred["status"])
+            results.append({"kid": kid["name"], "status": " / ".join(notify_status),
                             "sent": success, "response": status,
+                            "cost": cost["total"],
                             "time": datetime.now().strftime("%Y-%m-%d %H:%M")})
     return results
 
@@ -297,6 +373,7 @@ ICON_PANTS     = load_icon_b64("pants.png")
 ICON_PAJAMAS   = load_icon_b64("pajamas.png")
 ICON_UNDERWEAR = load_icon_b64("underwear.png")
 ICON_CSV       = load_icon_b64("csv_upload.png")
+ICON_SHOE      = load_icon_b64("shoe.png")
 
 def icon_img(b64, size=18):
     """インラインアイコンHTML"""
@@ -452,6 +529,10 @@ with tabs[0]:
         new_size = st.selectbox("サイズ", ["80","90","95","100","110","120","130","140","150","160","170"],
                                 label_visibility="collapsed", key="new_size")
 
+        st.markdown(f'<div class="icon-label">{icon_img(ICON_SHOE)}現在の靴のサイズ (cm)</div>', unsafe_allow_html=True)
+        new_shoe_size = st.selectbox("靴サイズ", ["12","13","14","15","16","17","18","19","20","21","22","23","24","25"],
+                                      index=4, label_visibility="collapsed", key="new_shoe")
+
         st.markdown(f'<div class="icon-label">{icon_img(ICON_CLOTHING)}上服の枚数</div>', unsafe_allow_html=True)
         new_tops = st.number_input("上服", 0, 50, 5, label_visibility="collapsed", key="new_tops")
 
@@ -468,7 +549,8 @@ with tabs[0]:
             if new_name:
                 kids.append({"name": new_name, "gender": new_gender,
                              "birthday": new_bday.strftime("%Y-%m-%d"), "height": new_height,
-                             "size": new_size, "tops": new_tops, "bottoms": new_bottoms,
+                             "size": new_size, "shoe_size": new_shoe_size,
+                             "tops": new_tops, "bottoms": new_bottoms,
                              "underwear": new_underwear, "pajamas": new_pajamas})
                 save_kids(kids)
                 st.success(new_name + " を追加しました！")
@@ -492,11 +574,12 @@ with tabs[0]:
             st.markdown(
                 f'<p style="font-size:0.85rem;color:#666;">'
                 f'{icon_img(ICON_RULER, 14)}身長: {kid.get("height","?")}cm　'
-                f'{icon_img(ICON_CLOTHING, 14)}サイズ: {kid.get("size","?")}</p>',
+                f'{icon_img(ICON_CLOTHING, 14)}サイズ: {kid.get("size","?")}　'
+                f'{icon_img(ICON_SHOE, 14)}靴: {kid.get("shoe_size","?")}cm</p>',
                 unsafe_allow_html=True)
 
             pred = predict_sizeout(kid.get("height", 120), kid.get("birthday", "2016-01-01"), kid.get("size", "120"))
-            st.markdown(f'<p style="font-weight:600;">{icon_img(ICON_CHART, 16)}サイズアウト予測</p>', unsafe_allow_html=True)
+            st.markdown(f'<p style="font-weight:600;">{icon_img(ICON_CHART, 16)}服のサイズアウト予測</p>', unsafe_allow_html=True)
             if pred["color"] == "red":
                 st.error(pred["status"])
             elif pred["color"] == "orange":
@@ -505,6 +588,16 @@ with tabs[0]:
                 st.success(pred["status"])
             st.caption("次のサイズ(" + str(pred["next_size"]) + "cm)まで あと " +
                        str(pred["cm_to_next"]) + "cm・約 " + str(pred["months"]) + "ヶ月")
+
+            shoe_pred = predict_shoe_sizeout(kid.get("birthday", "2016-01-01"), kid.get("shoe_size", "18"))
+            st.markdown(f'<p style="font-weight:600;">{icon_img(ICON_SHOE, 16)}靴のサイズアウト予測</p>', unsafe_allow_html=True)
+            if shoe_pred["color"] == "red":
+                st.error(shoe_pred["status"])
+            elif shoe_pred["color"] == "orange":
+                st.warning(shoe_pred["status"])
+            else:
+                st.success(shoe_pred["status"])
+            st.caption("次の靴サイズ(" + str(shoe_pred["next_size"]) + "cm)まで あと約 " + str(shoe_pred["months"]) + "ヶ月")
 
             st.markdown(f'<p style="font-weight:600;">{icon_img(ICON_CLOTHING, 16)}今の服の枚数</p>', unsafe_allow_html=True)
             col_a, col_b = st.columns(2)
@@ -933,12 +1026,30 @@ with tabs[4]:
     else:
         for kid in kids_for_notify:
             pred = predict_sizeout(kid.get("height", 120), kid.get("birthday", "2016-01-01"), kid.get("size", "120"))
+            shoe_pred = predict_shoe_sizeout(kid.get("birthday", "2016-01-01"), kid.get("shoe_size", "18"))
+            cost = estimate_sizeout_cost(kid)
+
+            st.markdown(f'<p style="font-weight:600;">{icon_img(ICON_BABY, 16)}{kid["name"]}</p>', unsafe_allow_html=True)
+            # 服の予測
             if pred["color"] == "red":
-                st.error("**" + kid["name"] + "**: " + pred["status"] + "（あと約" + str(pred["months"]) + "ヶ月）")
+                st.error("【服】" + pred["status"] + "（あと約" + str(pred["months"]) + "ヶ月）")
             elif pred["color"] == "orange":
-                st.warning("**" + kid["name"] + "**: " + pred["status"] + "（あと約" + str(pred["months"]) + "ヶ月）")
+                st.warning("【服】" + pred["status"] + "（あと約" + str(pred["months"]) + "ヶ月）")
             else:
-                st.success("**" + kid["name"] + "**: " + pred["status"] + "（あと約" + str(pred["months"]) + "ヶ月）")
+                st.success("【服】" + pred["status"] + "（あと約" + str(pred["months"]) + "ヶ月）")
+            # 靴の予測
+            if shoe_pred["color"] == "red":
+                st.error("【靴】" + shoe_pred["status"] + "（あと約" + str(shoe_pred["months"]) + "ヶ月）")
+            elif shoe_pred["color"] == "orange":
+                st.warning("【靴】" + shoe_pred["status"] + "（あと約" + str(shoe_pred["months"]) + "ヶ月）")
+            else:
+                st.success("【靴】" + shoe_pred["status"] + "（あと約" + str(shoe_pred["months"]) + "ヶ月）")
+            # 費用の目安
+            if pred["color"] in ["red", "orange"] or shoe_pred["color"] in ["red", "orange"]:
+                st.info("買い替え費用の目安: 服 ¥" + str(cost["clothes_cost"]) +
+                        " + 靴 ¥" + str(cost["shoe_cost"]) +
+                        " = **合計 ¥" + str(cost["total"]) + "**")
+            st.divider()
 
         if st.button("今すぐ通知チェック＆送信"):
             token = line_token if line_token else load_line_token()
