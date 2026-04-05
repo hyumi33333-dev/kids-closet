@@ -826,7 +826,11 @@ with tabs[0]:
                              "birthday": new_bday.strftime("%Y-%m-%d"), "height": new_height,
                              "size": new_size, "shoe_size": new_shoe_size})
                 save_kids(kids)
-                st.success(new_name + " を追加しました！")
+                # フォームをリセット
+                for k in ["new_name", "new_gender", "new_bday", "new_height",
+                           "new_size", "new_shoe"]:
+                    if k in st.session_state:
+                        del st.session_state[k]
                 st.rerun()
             else:
                 st.warning("名前を入力してください")
