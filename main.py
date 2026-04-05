@@ -555,7 +555,44 @@ def icon_heading(b64, text, level=3, size=24):
 # ==============================
 # ページ設定
 # ==============================
-st.set_page_config(page_title="Kids Closet", page_icon="", layout="centered")
+_logo_path = os.path.join(BASE_DIR, "static", "icons", "logo.png")
+st.set_page_config(page_title="Kids Closet",
+                   page_icon=Image.open(_logo_path) if os.path.exists(_logo_path) else "",
+                   layout="centered")
+
+# iOS ホーム画面アイコン & PWA設定
+_apple_icon_path = os.path.join(BASE_DIR, "static", "apple-touch-icon.png")
+if os.path.exists(_apple_icon_path):
+    with open(_apple_icon_path, "rb") as _f:
+        _apple_b64 = base64.b64encode(_f.read()).decode()
+    import streamlit.components.v1 as components
+    components.html(f"""
+    <script>
+    (function() {{
+        if (!document.querySelector('link[rel="apple-touch-icon"]')) {{
+            var link = document.createElement('link');
+            link.rel = 'apple-touch-icon';
+            link.sizes = '180x180';
+            link.href = 'data:image/png;base64,{_apple_b64}';
+            document.head.appendChild(link);
+        }}
+        if (!document.querySelector('meta[name="apple-mobile-web-app-capable"]')) {{
+            var meta = document.createElement('meta');
+            meta.name = 'apple-mobile-web-app-capable';
+            meta.content = 'yes';
+            document.head.appendChild(meta);
+            var meta2 = document.createElement('meta');
+            meta2.name = 'apple-mobile-web-app-title';
+            meta2.content = 'Kids Closet';
+            document.head.appendChild(meta2);
+            var meta3 = document.createElement('meta');
+            meta3.name = 'apple-mobile-web-app-status-bar-style';
+            meta3.content = 'default';
+            document.head.appendChild(meta3);
+        }}
+    }})();
+    </script>
+    """, height=0)
 
 # ==============================
 # カラフルポップCSS + カスタムアイコン
