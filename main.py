@@ -9,77 +9,102 @@ from PIL import Image
 import glob
 import requests
 import anthropic
+import hashlib
+import uuid
 
 # ==============================
 # 設定
 # ==============================
-BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR  = os.path.join(BASE_DIR, "data")
-CSV_DIR   = os.path.join(DATA_DIR, "csv")
-PHOTO_DIR = os.path.join(BASE_DIR, "photos")
-KIDS_FILE       = os.path.join(DATA_DIR, "kids.json")
-CLOTHES_FILE    = os.path.join(DATA_DIR, "clothes.json")
-LINE_TOKEN_FILE    = os.path.join(DATA_DIR, "line_token.json")
-NOTIFY_LOG_FILE    = os.path.join(DATA_DIR, "notify_log.json")
-CLAUDE_KEY_FILE    = os.path.join(DATA_DIR, "claude_api_key.json")
-
-for d in [DATA_DIR, CSV_DIR, PHOTO_DIR]:
-    os.makedirs(d, exist_ok=True)
+BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
+USERS_DIR  = os.path.join(BASE_DIR, "data")
+USERS_FILE = os.path.join(USERS_DIR, "users.json")
+os.makedirs(USERS_DIR, exist_ok=True)
 
 # ==============================
-# データ読み書き
+# ユーザー認証
 # ==============================
-def load_kids():
-    if os.path.exists(KIDS_FILE):
-        with open(KIDS_FILE, encoding="utf-8") as f:
+def hash_password(password, salt=None):
+    if salt is None:
+        salt = uuid.uuid4().hex
+    hashed = hashlib.sha256((salt + password).encode()).hexdigest()
+    return salt + ":" + hashed
+
+def verify_password(password, stored):
+    try:
+        salt, _ = stored.split(":")
+        return hash_password(password, salt) == stored
+    except Exception:
+        return False
+
+def load_users():
+    if os.path.exists(USERS_FILE):
+        with open(USERS_FILE, encoding="utf-8") as f:
             return json.load(f)
-    return []
+    return {}
 
+def save_users(users):
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(users, f, ensure_ascii=False, indent=2)
+
+def get_user_dirs(username):
+    """ユーザーごとのデータディレクトリとファイルパスを返す"""
+    user_data = os.path.join(USERS_DIR, "user_" + username)
+    user_csv  = os.path.join(user_data, "csv")
+    user_photo = os.path.join(user_data, "photos")
+    for d in [user_data, user_csv, user_photo]:
+        os.makedirs(d, exist_ok=True)
+    return {
+        "DATA_DIR":        user_data,
+        "CSV_DIR":         user_csv,
+        "PHOTO_DIR":       user_photo,
+        "KIDS_FILE":       os.path.join(user_data, "kids.json"),
+        "CLOTHES_FILE":    os.path.join(user_data, "clothes.json"),
+        "LINE_TOKEN_FILE": os.path.join(user_data, "line_token.json"),
+        "NOTIFY_LOG_FILE": os.path.join(user_data, "notify_log.json"),
+        "CLAUDE_KEY_FILE": os.path.join(user_data, "claude_api_key.json"),
+    }
+
+# ==============================
+# データ読み書き（ユーザー別パス対応）
+# ==============================
+def _load_json(filepath, default=None):
+    if default is None:
+        default = []
+    if os.path.exists(filepath):
+        with open(filepath, encoding="utf-8") as f:
+            return json.load(f)
+    return default
+
+def _save_json(filepath, data):
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def load_kids():
+    return _load_json(UP["KIDS_FILE"], [])
 def save_kids(kids):
-    with open(KIDS_FILE, "w", encoding="utf-8") as f:
-        json.dump(kids, f, ensure_ascii=False, indent=2)
+    _save_json(UP["KIDS_FILE"], kids)
 
 def load_clothes():
-    if os.path.exists(CLOTHES_FILE):
-        with open(CLOTHES_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    return []
-
+    return _load_json(UP["CLOTHES_FILE"], [])
 def save_clothes(clothes):
-    with open(CLOTHES_FILE, "w", encoding="utf-8") as f:
-        json.dump(clothes, f, ensure_ascii=False, indent=2)
+    _save_json(UP["CLOTHES_FILE"], clothes)
 
 def load_line_token():
-    if os.path.exists(LINE_TOKEN_FILE):
-        with open(LINE_TOKEN_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-            return data.get("token", "")
-    return ""
-
+    data = _load_json(UP["LINE_TOKEN_FILE"], {})
+    return data.get("token", "") if isinstance(data, dict) else ""
 def save_line_token(token):
-    with open(LINE_TOKEN_FILE, "w", encoding="utf-8") as f:
-        json.dump({"token": token}, f, ensure_ascii=False, indent=2)
+    _save_json(UP["LINE_TOKEN_FILE"], {"token": token})
 
 def load_notify_log():
-    if os.path.exists(NOTIFY_LOG_FILE):
-        with open(NOTIFY_LOG_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    return []
-
+    return _load_json(UP["NOTIFY_LOG_FILE"], [])
 def save_notify_log(log):
-    with open(NOTIFY_LOG_FILE, "w", encoding="utf-8") as f:
-        json.dump(log, f, ensure_ascii=False, indent=2)
+    _save_json(UP["NOTIFY_LOG_FILE"], log)
 
 def load_claude_api_key():
-    if os.path.exists(CLAUDE_KEY_FILE):
-        with open(CLAUDE_KEY_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-            return data.get("api_key", "")
-    return ""
-
+    data = _load_json(UP["CLAUDE_KEY_FILE"], {})
+    return data.get("api_key", "") if isinstance(data, dict) else ""
 def save_claude_api_key(key):
-    with open(CLAUDE_KEY_FILE, "w", encoding="utf-8") as f:
-        json.dump({"api_key": key}, f, ensure_ascii=False, indent=2)
+    _save_json(UP["CLAUDE_KEY_FILE"], {"api_key": key})
 
 # ==============================
 # サイズアウト予測
@@ -263,7 +288,7 @@ def detect_shop(content):
     return "その他"
 
 def parse_csv_files():
-    files = glob.glob(os.path.join(CSV_DIR, "*.csv"))
+    files = glob.glob(os.path.join(UP["CSV_DIR"], "*.csv"))
     monthly, shop_amounts, transactions = {}, {}, []
     for fpath in files:
         try:
@@ -624,17 +649,103 @@ hr { border-color: #FFD4C4 !important; }
 """, unsafe_allow_html=True)
 
 # ==============================
-# タイトル
+# ログイン / 新規登録
+# ==============================
+if "logged_in" not in st.session_state:
+    st.session_state["logged_in"] = False
+    st.session_state["username"] = ""
+
+def show_login_page():
+    st.markdown(
+        f'<div style="text-align:center;margin:2rem 0 1rem;">'
+        f'<img src="data:image/png;base64,{ICON_LOGO}" width="80" height="80"><br>'
+        f'<span style="font-size:2.2rem;font-weight:800;color:#FF6B6B;">Kids Closet</span>'
+        f'<p style="color:#999;font-size:0.9rem;">子どもの成長記録・服の管理・衣類費の予測</p>'
+        f'</div>', unsafe_allow_html=True)
+
+    login_tab, register_tab = st.tabs(["ログイン", "新規登録"])
+
+    with login_tab:
+        st.markdown(f'<div class="icon-label">{icon_img(ICON_NAMETAG)}ユーザー名</div>', unsafe_allow_html=True)
+        login_user = st.text_input("ユーザー名", label_visibility="collapsed", key="login_user",
+                                    placeholder="ユーザー名を入力")
+        st.markdown(f'<div class="icon-label">{icon_img(ICON_STAR)}パスワード</div>', unsafe_allow_html=True)
+        login_pass = st.text_input("パスワード", type="password", label_visibility="collapsed", key="login_pass",
+                                    placeholder="パスワードを入力")
+        if st.button("ログイン", key="btn_login", use_container_width=True):
+            if not login_user or not login_pass:
+                st.warning("ユーザー名とパスワードを入力してください")
+            else:
+                users = load_users()
+                if login_user in users and verify_password(login_pass, users[login_user]["password"]):
+                    st.session_state["logged_in"] = True
+                    st.session_state["username"] = login_user
+                    st.rerun()
+                else:
+                    st.error("ユーザー名またはパスワードが間違っています")
+
+    with register_tab:
+        st.markdown(f'<div class="icon-label">{icon_img(ICON_NAMETAG)}ユーザー名（半角英数字）</div>', unsafe_allow_html=True)
+        reg_user = st.text_input("ユーザー名", label_visibility="collapsed", key="reg_user",
+                                  placeholder="例: mama_yumi")
+        st.markdown(f'<div class="icon-label">{icon_img(ICON_STAR)}パスワード（6文字以上）</div>', unsafe_allow_html=True)
+        reg_pass = st.text_input("パスワード", type="password", label_visibility="collapsed", key="reg_pass",
+                                  placeholder="パスワードを入力")
+        st.markdown(f'<div class="icon-label">{icon_img(ICON_STAR)}パスワード確認</div>', unsafe_allow_html=True)
+        reg_pass2 = st.text_input("パスワード確認", type="password", label_visibility="collapsed", key="reg_pass2",
+                                   placeholder="もう一度パスワードを入力")
+        if st.button("アカウントを作成", key="btn_register", use_container_width=True):
+            if not reg_user or not reg_pass:
+                st.warning("ユーザー名とパスワードを入力してください")
+            elif len(reg_pass) < 6:
+                st.warning("パスワードは6文字以上にしてください")
+            elif reg_pass != reg_pass2:
+                st.error("パスワードが一致しません")
+            elif not reg_user.replace("_", "").replace("-", "").isalnum():
+                st.warning("ユーザー名は半角英数字と_-のみ使えます")
+            else:
+                users = load_users()
+                if reg_user in users:
+                    st.error("このユーザー名は既に使われています")
+                else:
+                    users[reg_user] = {
+                        "password": hash_password(reg_pass),
+                        "created": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    }
+                    save_users(users)
+                    st.session_state["logged_in"] = True
+                    st.session_state["username"] = reg_user
+                    st.success("アカウントを作成しました！")
+                    st.rerun()
+
+if not st.session_state["logged_in"]:
+    show_login_page()
+    st.stop()
+
+# ユーザー別のデータパスを設定
+UP = get_user_dirs(st.session_state["username"])
+
+# ==============================
+# タイトル（ログイン後）
 # ==============================
 st.title("Kids Closet")
-st.markdown(
-    f'<div style="display:flex;align-items:center;gap:12px;margin-bottom:4px;">'
-    f'<img src="data:image/png;base64,{ICON_LOGO}" width="52" height="52">'
-    f'<span style="font-size:2rem;font-weight:800;color:#FF6B6B;">Kids Closet</span>'
-    f'</div>'
-    f'<p style="color:#999;font-size:0.9rem;margin-top:0;">子どもの成長記録・服の管理・衣類費の予測</p>',
-    unsafe_allow_html=True
-)
+
+# ログアウトボタンをヘッダー右に配置
+col_title, col_logout = st.columns([4, 1])
+with col_title:
+    st.markdown(
+        f'<div style="display:flex;align-items:center;gap:12px;margin-bottom:4px;">'
+        f'<img src="data:image/png;base64,{ICON_LOGO}" width="52" height="52">'
+        f'<span style="font-size:2rem;font-weight:800;color:#FF6B6B;">Kids Closet</span>'
+        f'</div>'
+        f'<p style="color:#999;font-size:0.9rem;margin-top:0;">'
+        f'{icon_img(ICON_BABY, 14)}{st.session_state["username"]} さん</p>',
+        unsafe_allow_html=True)
+with col_logout:
+    if st.button("ログアウト", key="btn_logout"):
+        st.session_state["logged_in"] = False
+        st.session_state["username"] = ""
+        st.rerun()
 
 tabs = st.tabs(["子ども設定", "服の管理", "CSV分析・予測", "写真一覧", "通知設定"])
 
@@ -848,7 +959,7 @@ with tabs[1]:
                 if c_name:
                     photo_path = ""
                     if photo_source is not None:
-                        kid_photo_dir = os.path.join(PHOTO_DIR, c_kid)
+                        kid_photo_dir = os.path.join(UP["PHOTO_DIR"], c_kid)
                         os.makedirs(kid_photo_dir, exist_ok=True)
                         fname = datetime.now().strftime("%Y%m%d%H%M%S") + ".jpg"
                         photo_path = os.path.join(kid_photo_dir, fname)
@@ -952,12 +1063,12 @@ with tabs[2]:
                                      label_visibility="collapsed")
     if uploaded_csvs:
         for uf in uploaded_csvs:
-            save_path = os.path.join(CSV_DIR, uf.name)
+            save_path = os.path.join(UP["CSV_DIR"], uf.name)
             with open(save_path, "wb") as f:
                 f.write(uf.getbuffer())
         st.success(str(len(uploaded_csvs)) + "個のCSVをアップロードしました")
 
-    csv_files = glob.glob(os.path.join(CSV_DIR, "*.csv"))
+    csv_files = glob.glob(os.path.join(UP["CSV_DIR"], "*.csv"))
     if not csv_files:
         st.info("CSVファイルをアップロードしてください。複数年分まとめてOKです。")
     else:
