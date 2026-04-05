@@ -724,7 +724,7 @@ def show_login_page():
     with register_tab:
         st.markdown(f'<div class="icon-label">{icon_img(ICON_NAMETAG)}ユーザー名（半角英数字）</div>', unsafe_allow_html=True)
         reg_user = st.text_input("ユーザー名", label_visibility="collapsed", key="reg_user",
-                                  placeholder="例: mama_yumi")
+                                  placeholder="例: kids_closet")
         st.markdown(f'<div class="icon-label">{icon_img(ICON_STAR)}パスワード（6文字以上）</div>', unsafe_allow_html=True)
         reg_pass = st.text_input("パスワード", type="password", label_visibility="collapsed", key="reg_pass",
                                   placeholder="パスワードを入力")
