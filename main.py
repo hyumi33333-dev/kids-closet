@@ -798,6 +798,11 @@ with tabs[0]:
     st.markdown(icon_heading(ICON_BABY, "お子さまの情報"), unsafe_allow_html=True)
     kids = load_kids()
 
+    # 追加成功メッセージの表示
+    if st.session_state.get("kid_added"):
+        st.success(st.session_state["kid_added"] + " を追加しました！")
+        del st.session_state["kid_added"]
+
     with st.expander("＋ 子どもを追加する", expanded=len(kids) == 0):
         st.markdown(f'<div class="icon-label">{icon_img(ICON_NAMETAG)}名前（例：長男）</div>', unsafe_allow_html=True)
         new_name = st.text_input("名前", label_visibility="collapsed", key="new_name")
@@ -826,6 +831,8 @@ with tabs[0]:
                              "birthday": new_bday.strftime("%Y-%m-%d"), "height": new_height,
                              "size": new_size, "shoe_size": new_shoe_size})
                 save_kids(kids)
+                # 成功メッセージをセッションに保存
+                st.session_state["kid_added"] = new_name
                 # フォームをリセット
                 for k in ["new_name", "new_gender", "new_bday", "new_height",
                            "new_size", "new_shoe"]:
